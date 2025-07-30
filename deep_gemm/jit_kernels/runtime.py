@@ -13,12 +13,14 @@ class GemmType(enum.Enum):
     Normal = 0
     GroupedContiguous = 1
     GroupedMasked = 2
+    NormalSwapAB = 3
 
     def __str__(self) -> str:
         return {
             0: 'Normal',
             1: 'GroupedContiguous',
             2: 'GroupedMasked',
+            3: 'NormalSwapAB',
         }[self.value]
 
 
@@ -104,7 +106,7 @@ def make_2d_tma_b_desc(gemm_type: GemmType, t: torch.Tensor,
                        block_n: int, block_k: int,
                        num_groups: int) -> cbd.CUtensorMap:
     return make_2d_tma_desc(t,
-                            shape_k, shape_n * (num_groups if gemm_type != GemmType.Normal else 1), n_stride,
+                            shape_k, shape_n * (num_groups if gemm_type not in (GemmType.Normal, GemmType.NormalSwapAB) else 1), n_stride,
                             block_k, block_n)
 
 

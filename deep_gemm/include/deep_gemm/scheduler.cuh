@@ -7,7 +7,8 @@ namespace deep_gemm {
 enum class GemmType {
     Normal,
     GroupedContiguous,
-    GroupedMasked
+    GroupedMasked,
+    NormalSwapAB
 };
 
 #pragma clang diagnostic push
@@ -37,7 +38,7 @@ struct Scheduler {
     __device__ __forceinline__ explicit Scheduler(const uint32_t& shape_m,
                                                   int* grouped_layout = nullptr) {
         num_aligned_m_blocks = ceil_div(shape_m, BLOCK_M);
-        if constexpr (kGemmType == GemmType::Normal) {
+        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
         } else if (kGemmType == GemmType::GroupedContiguous) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
@@ -50,7 +51,7 @@ struct Scheduler {
 
     // ReSharper disable once CppNotAllPathsReturnValue
     __device__ __forceinline__ bool is_computation_valid(const uint32_t& m_block_idx, const uint32_t& m_offset) const {
-        if constexpr (kGemmType == GemmType::Normal) {
+        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB) {
             return true;
         } else if constexpr (kGemmType == GemmType::GroupedContiguous) {
             return __ldg(grouped_layout + m_offset + m_block_idx * BLOCK_M) >= 0;
@@ -62,7 +63,7 @@ struct Scheduler {
     __device__ __forceinline__ bool is_tma_multicast_valid(const uint32_t& m_block_idx) const {
         if (num_blocks_in_group == 1)
             return false;
-        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::GroupedMasked) {
+        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB or kGemmType == GemmType::GroupedMasked) {
             return true;
         } else {
             DG_STATIC_ASSERT(kGemmType == GemmType::GroupedContiguous, "Invalid Gemm type");
@@ -113,7 +114,7 @@ struct Scheduler {
     template <bool kIgnoreGroupedForGroupedContiguous=true>
     __device__ __forceinline__ uint32_t get_global_idx(const uint32_t& shape_dim, const uint32_t& block_size,
                                                        const uint32_t& block_idx, const uint32_t& m_block_idx=0) {
-        if constexpr (kGemmType == GemmType::Normal) {
+        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB) {
             return block_idx * block_size;
         } else if constexpr (kGemmType == GemmType::GroupedContiguous) {
             auto offset = kIgnoreGroupedForGroupedContiguous ? 0 : max(0, __ldg(grouped_layout + m_block_idx * BLOCK_M));

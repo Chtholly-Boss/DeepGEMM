@@ -15,6 +15,8 @@
 #include "tma_utils.cuh"
 #include "utils.cuh"
 
+#define __CUDA_ARCH__ 900
+
 namespace deep_gemm {
 
 template <uint32_t kNumFormerIters, uint32_t kGap, uint32_t kEnd>
@@ -54,11 +56,11 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
     DG_STATIC_ASSERT(BLOCK_M % WGMMA::M == 0, "Invalid block size");
 
     // Shared memory
-    static constexpr bool kMustUseUniformedScaleB = (BLOCK_K % BLOCK_N == 0);
+    static constexpr bool kMustUseUniformedScaleB = (BLOCK_K % BLOCK_M == 0);
     static constexpr uint32_t SMEM_D_SIZE = BLOCK_M * (BLOCK_N + BLOCK_N_PADDING) * sizeof(__nv_bfloat16);
     static constexpr uint32_t SMEM_A_SIZE_PER_STAGE = BLOCK_M * BLOCK_K * sizeof(__nv_fp8_e4m3);
     static constexpr uint32_t SMEM_B_SIZE_PER_STAGE = BLOCK_N * BLOCK_K * sizeof(__nv_fp8_e4m3);
-    static constexpr uint32_t SMEM_SCALES_A_SIZE_PER_STAGE = BLOCK_M * sizeof(float);
+    static constexpr uint32_t SMEM_SCALES_A_SIZE_PER_STAGE = ceil_div<uint32_t>(BLOCK_N * sizeof(float), 128) * 128;
     static constexpr uint32_t SHAPE_K_SCALES = ceil_div(SHAPE_K, BLOCK_K);
     static constexpr uint32_t SMEM_SCALES_B_SIZE = ceil_div<uint32_t>(SHAPE_K_SCALES * (kMustUseUniformedScaleB ? 1 : 2) * sizeof(float), sizeof(Barrier)) * sizeof(Barrier);
 
@@ -202,16 +204,18 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                         tma_copy(&tensor_map_a, reinterpret_cast<uint64_t*>(&full_barrier),
                                  smem_a[s], k_idx, scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx),
                                  num_tma_multicast_a);
-                        tma_copy(&tensor_map_scales_a, reinterpret_cast<uint64_t*>(&full_barrier),
-                                 smem_scales_a[s], m_block_idx * BLOCK_M,
-                                 scheduler.get_global_idx(SHAPE_K_SCALES, 1, k_idx / BLOCK_K),
-                                 num_tma_multicast_a);
 
                         // Issue TMA B
                         tma_copy(&tensor_map_b, reinterpret_cast<uint64_t*>(&full_barrier),
                                  smem_b[s], k_idx, scheduler.get_global_idx<false>(SHAPE_N, BLOCK_N, n_block_idx, m_block_idx),
                                  num_tma_multicast_b);
-                        full_barrier.arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_SCALES_A_SIZE_PER_STAGE);
+                        // ! scales_a now applies to tensormap_b
+                        tma_copy(&tensor_map_scales_a, reinterpret_cast<uint64_t*>(&full_barrier),
+                                 smem_scales_a[s], n_block_idx * BLOCK_N,
+                                 scheduler.get_global_idx(SHAPE_K_SCALES, 1, k_idx / BLOCK_K),
+                                 num_tma_multicast_b);
+                        // full_barrier.arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_SCALES_A_SIZE_PER_STAGE);
+                        full_barrier.arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + BLOCK_N * sizeof(float));
                     }
 
                     // Wait unaligned cases
@@ -253,7 +257,8 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
             // NOTES: except the first warp, we want to overlap loading B scales with TMA stores between tasks
             if (threadIdx.x >= 32) {
                 auto num_previous_lines = scheduler.get_global_idx<false>(ceil_div(SHAPE_N, BLOCK_K), 0, 0, m_block_idx);
-                auto local_scales_b = scales_b + (num_previous_lines + ((n_block_idx * BLOCK_N) / BLOCK_K)) * SHAPE_K_SCALES;
+                // Load B scales needed for all k iterations of this block into smem
+                auto local_scales_b = scales_b + (num_previous_lines + ((m_block_idx * BLOCK_M) / BLOCK_K)) * SHAPE_K_SCALES;
                 #pragma unroll
                 for (uint32_t i = threadIdx.x - 32; i < num_scales_b; i += kNumMathThreads - 32)
                     st_shared(smem_scales_b + i, __ldg(local_scales_b + i));
@@ -292,17 +297,19 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
 
                     // Wait TMA arrivals
                     full_barriers[s]->wait((scheduler.current_iter * kNumIterations + k_iter) & 1);
+                    // ! BN determine the number of scale_a to be read, but all warpgroups read the same scale_a
+                    const auto col_offset = lane_idx % 4 * 2;
+                    constexpr auto kNumScalesA = WGMMA::kNumAccum / 2;
+                    float scale_[kNumScalesA];
+                    for (int scaleIdx = 0; scaleIdx < kNumScalesA / 2; ++scaleIdx) {
+                        scale_[scaleIdx * 2 + 0] = ld_shared(smem_scales_a[s] + col_offset + scaleIdx * 8) * scale_b_0;
+                        scale_[scaleIdx * 2 + 1] = ld_shared(smem_scales_a[s] + col_offset + scaleIdx * 8 + 1) * scale_b_0;;
+                    }
 
                     // TODO: remove some useless computation for unaligned Ms
                     #pragma unroll
                     for (uint32_t local_idx = 0; local_idx < BLOCK_M / WAVE_BLOCK_M; ++ local_idx) {
                       	auto m_offset = local_idx * WAVE_BLOCK_M;
-
-                    	// Read A scales
-                    	// NOTES: all shared memory read must be prior to `warpgroup_arrive` to avoid next scheduled block polluting the results
-                    	auto scale_a_0 = ld_shared(smem_scales_a[s] + r_0 + m_offset);
-                        auto scale_a_1 = ld_shared(smem_scales_a[s] + r_1 + m_offset);
-
                     	// Commit WGMMA instructions
                     	#pragma unroll
                     	for (uint32_t i = 0; i < WGMMA::kNumAccum; ++ i)
@@ -326,20 +333,13 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
 
                     	// Promote with scales
                     	// NOTES: making it as predicates is very important for performance, comparing to two loops
-                    	float scale_0_0 = scale_a_0 * scale_b_0, scale_1_0 = scale_a_1 * scale_b_0;
-                    	float scale_0_1, scale_1_1;
-                    	if constexpr (not kMustUseUniformedScaleB)
-                            scale_0_1 = scale_a_0 * scale_b_1, scale_1_1 = scale_a_1 * scale_b_1;
-
                         auto shifted_accum = final_accum + WGMMA::kNumAccum * local_idx;
                     	#pragma unroll
                     	for (uint32_t i = 0; i < WGMMA::kNumAccum / 4; ++ i) {
-                            // NOTES: for unrolled `num_former_iters` cases, we expect the compiler to automatically make it a constant
-                            bool predicate = kMustUseUniformedScaleB or i < num_former_iters;
-                            shifted_accum[i * 4 + 0] += (predicate ? scale_0_0 : scale_0_1) * accum[i * 4 + 0];
-                            shifted_accum[i * 4 + 1] += (predicate ? scale_0_0 : scale_0_1) * accum[i * 4 + 1];
-                            shifted_accum[i * 4 + 2] += (predicate ? scale_1_0 : scale_1_1) * accum[i * 4 + 2];
-                            shifted_accum[i * 4 + 3] += (predicate ? scale_1_0 : scale_1_1) * accum[i * 4 + 3];
+                            shifted_accum[i * 4 + 0] += scale_[i * 2 + 0] * accum[i * 4 + 0];
+                            shifted_accum[i * 4 + 1] += scale_[i * 2 + 1] * accum[i * 4 + 1];
+                            shifted_accum[i * 4 + 2] += scale_[i * 2 + 0] * accum[i * 4 + 2];
+                            shifted_accum[i * 4 + 3] += scale_[i * 2 + 1] * accum[i * 4 + 3];
                     	}
                     }
                 }
@@ -405,11 +405,11 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                         // No swizzling, just padding
                         // NOTES: padding must be zero for BF16 output
                         DG_STATIC_ASSERT(BLOCK_N_PADDING == 0, "Padding must be zero for BF16 output");
-                        smem_ptr = reinterpret_cast<uint8_t*>(smem_d + (m_offset + warp_idx * WGMMA_M_PER_WARP + lane_idx) * (BLOCK_N + BLOCK_N_PADDING) + i * 8);
+                        smem_ptr = reinterpret_cast<uint8_t*>(smem_d + (i * 8 + lane_idx % 8)* BLOCK_M + lane_idx / 8 * 8 + warp_idx * 16);
                     }
 
                     // NOTES: only 16 lanes' addresses are used
-                    SM90_U32x2_STSM_N<nv_bfloat162>::copy(
+                    SM90_U32x2_STSM_T<nv_bfloat162>::copy(
                         __float22bfloat162_rn({shifted_accum[i * 4 + 0], shifted_accum[i * 4 + 1]}),
                         __float22bfloat162_rn({shifted_accum[i * 4 + 2], shifted_accum[i * 4 + 3]}),
                         smem_ptr
@@ -426,8 +426,8 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                 auto in_block_n_offset = threadIdx.x * TMA_D_BLOCK_N;
                 auto smem_ptr = smem_d + in_block_n_offset * BLOCK_M;
                 cute::SM90_TMA_STORE_2D::copy(&tensor_map_d, smem_ptr,
-                                              n_block_idx * BLOCK_N + in_block_n_offset,
-                                              scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx));
+                                            scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx),
+                                              n_block_idx * BLOCK_N + in_block_n_offset);                
                 cute::tma_store_arrive();
             }
             __syncwarp();

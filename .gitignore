@@ -12,3 +12,6 @@ deep_gemm/include/cutlass
 
 *.so
 third-party/
+compile_commands.json
+.cache/
+.vscode/

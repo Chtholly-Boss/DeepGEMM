@@ -45,7 +45,7 @@ def get_smem_config(num_stages: int, k: int, block_m: int, block_n: int, block_k
     # NOTES: `scales_b` in a total manner or per-stage manner
     smem_d = block_m * (block_n + block_n_padding) * (4 if is_fp32_out else 2)
     smem_a_per_stage = block_m * block_k
-    smem_scales_a_per_stage = block_m * 4
+    smem_scales_a_per_stage = ceil_div(block_n * 4, 128) * 128
     smem_b_per_stage = block_n * block_k
     smem_scales_b_per_stage = ceil_div(block_n * 4, block_k) * block_k if is_wgrad else 0
     smem_scales_b = ceil_div(k, block_k) * 4 if not is_wgrad else 0
@@ -72,7 +72,7 @@ def get_best_configs(m: int, n: int, k: int, num_groups: int, num_sms: int,
                      is_fp32_out: bool = False, is_wgrad: bool = False) -> \
         Tuple[int, int, int, int, Tuple[int, bool], Tuple[int, int, int]]:
     if not is_grouped_contiguous:
-        block_ms = (64, 128, ) + ((256, ) if not is_fp32_out else ())
+        block_ms = (64, 128, )
     else:
         block_ms = (get_m_alignment_for_contiguous_layout(), )
     block_ns = tuple(range(16, 129, 8)) + ((136, 152, ) if is_wgrad else (144, 160, ))
@@ -200,25 +200,25 @@ def gemm_fp8_fp8_bf16_nt_swapAB(lhs: Tuple[torch.Tensor, torch.Tensor],
 
     # Auto-tuning with compilation
     num_sms = get_num_sms()
-    num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(m, n, k, 1, num_sms)
+    num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(n, m, k, 1, num_sms)
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    tensor_map_a = make_2d_tma_a_desc(GemmType.Normal, lhs, m, k, lhs.stride(0), block_m, block_k, 1)
-    tensor_map_b = make_2d_tma_b_desc(GemmType.Normal, rhs, n, k, rhs.stride(0), block_n, block_k, 1)
-    tensor_map_d = make_2d_tma_d_desc(GemmType.Normal, out, m, n, out.stride(0), block_m, block_n, 1, smem_config[1])
-    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.Normal, lhs_scales, m, k, block_m, block_k, 1)
+    tensor_map_a = make_2d_tma_a_desc(GemmType.Normal, rhs, n, k, rhs.stride(0), block_m, block_k, 1)
+    tensor_map_b = make_2d_tma_b_desc(GemmType.Normal, lhs, m, k, lhs.stride(0), block_n, block_k, 1)
+    tensor_map_d = make_2d_tma_d_desc(GemmType.Normal, out, m, n, out.stride(0), block_n, block_m, 1, 0)
+    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.Normal, lhs_scales, m, k, block_n, block_k, 1)
 
     kwargs = {
         # Templated arguments
-        'GEMM_TYPE': GemmType.Normal,
+        'GEMM_TYPE': GemmType.NormalSwapAB,
         'NUM_TMA_THREADS': num_tma_threads,
         'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-        'M': m, 'N': n, 'K': aligned_k,
+        'M': n, 'N': m, 'K': aligned_k,
         'NUM_GROUPS': 1,
         'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
-        'SWIZZLE_D_MODE': smem_config[1],
+        'SWIZZLE_D_MODE': 0,
         'BLOCK_N_PADDING': smem_config[2],
         'NUM_STAGES': num_stages,
         'NUM_TMA_MULTICAST': tma_multicast_config[0],
