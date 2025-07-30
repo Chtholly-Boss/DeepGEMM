@@ -187,6 +187,25 @@ def test_gemm() -> None:
     print()
 
 
+def test_gemm_swapAB() -> None:
+    print('Testing GEMM SwapAB:')
+    for m in (16, 32, 64):
+        for k, n in [(576, 7168), (7168, 2112), (1536, 24576), (512, 32768), (16384, 7168), (7168, 4096), (2048, 7168)]:
+            x_fp8, y_fp8, out, ref_out = construct(m, k, n)
+            deep_gemm.gemm_fp8_fp8_bf16_nt_swapAB(x_fp8, y_fp8, out)
+            diff = calc_diff(out, ref_out)
+            assert diff < 0.001, f'{m=}, {k=}, {n=}, {diff:.5f}'
+
+            # noinspection PyShadowingNames
+            def test_func():
+                deep_gemm.gemm_fp8_fp8_bf16_nt_swapAB(x_fp8, y_fp8, out)
+
+            t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
+            print(f' > Perf (m={m:5}, n={n:5}, k={k:5}): {t * 1e6:4.0f} us | '
+                  f'throughput: {2 * m * n * k / t / 1e12:4.0f} TFLOPS, '
+                  f'{(m * k + k * n + m * n * 2) / 1e9 / t:4.0f} GB/s')
+    print()
+
 def test_m_grouped_gemm_contiguous() -> None:
     print('Testing grouped contiguous GEMM:')
 
@@ -305,6 +324,7 @@ if __name__ == '__main__':
     print(f' > {deep_gemm.__path__}\n')
 
     test_gemm()
+    test_gemm_swapAB()
     test_m_grouped_gemm_contiguous()
     test_m_grouped_gemm_masked()
 
