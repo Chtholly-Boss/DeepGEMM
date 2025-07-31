@@ -5,10 +5,11 @@
 namespace deep_gemm {
 
 enum class GemmType {
-    Normal,
-    GroupedContiguous,
-    GroupedMasked,
-    NormalSwapAB
+    Normal = 0,
+    GroupedContiguous = 1,
+    GroupedMasked = 2,
+    NormalSwapAB = 3,
+    GroupedContiguousSwapAB = 4,
 };
 
 #pragma clang diagnostic push
@@ -40,7 +41,7 @@ struct Scheduler {
         num_aligned_m_blocks = ceil_div(shape_m, BLOCK_M);
         if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
-        } else if (kGemmType == GemmType::GroupedContiguous) {
+        } else if (kGemmType == GemmType::GroupedContiguous or kGemmType == GemmType::GroupedContiguousSwapAB) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
             this->grouped_layout = grouped_layout;
         } else if (kGemmType == GemmType::GroupedMasked) {
@@ -55,6 +56,9 @@ struct Scheduler {
             return true;
         } else if constexpr (kGemmType == GemmType::GroupedContiguous) {
             return __ldg(grouped_layout + m_offset + m_block_idx * BLOCK_M) >= 0;
+        } else if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
+            // indeed n_block_idx & n_offset
+            return __ldg(grouped_layout + m_block_idx * BLOCK_N + m_offset) >= 0;
         } else if constexpr (kGemmType == GemmType::GroupedMasked) {
             return m_offset + m_block_idx * BLOCK_M < __ldg(grouped_layout + curr_group_idx);
         }
@@ -65,6 +69,15 @@ struct Scheduler {
             return false;
         if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB or kGemmType == GemmType::GroupedMasked) {
             return true;
+        } else if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
+            if constexpr (not kIsTMAMulticastOnA) {
+                return true;
+            } else {
+                // n_block_idx indeed
+                auto group_idx = __ldg(grouped_layout + m_block_idx * BLOCK_M);
+                auto peer_group_idx = __ldg(grouped_layout + (m_block_idx ^ 1) * BLOCK_M);
+                return group_idx == peer_group_idx;
+            }
         } else {
             DG_STATIC_ASSERT(kGemmType == GemmType::GroupedContiguous, "Invalid Gemm type");
             if constexpr (kIsTMAMulticastOnA) {
@@ -118,6 +131,10 @@ struct Scheduler {
             return block_idx * block_size;
         } else if constexpr (kGemmType == GemmType::GroupedContiguous) {
             auto offset = kIgnoreGroupedForGroupedContiguous ? 0 : max(0, __ldg(grouped_layout + m_block_idx * BLOCK_M));
+            return offset * shape_dim + block_idx * block_size;
+        } else if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
+            // n_block_idx indeed
+            auto offset = kIgnoreGroupedForGroupedContiguous ? 0 : max(0, __ldg(grouped_layout + m_block_idx * BLOCK_N));
             return offset * shape_dim + block_idx * block_size;
         } else if constexpr (kGemmType == GemmType::GroupedMasked) {
             return curr_group_idx * shape_dim + block_idx * block_size;

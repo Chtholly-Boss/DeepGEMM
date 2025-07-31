@@ -217,9 +217,17 @@ def test_gemm_swapAB() -> None:
 def test_m_grouped_gemm_contiguous() -> None:
     print('Testing grouped contiguous GEMM:')
 
-    for num_groups, expected_m_per_group, k, n in ((4, 8192, 7168, 4096), (4, 8192, 2048, 7168),
-                                                   (8, 4096, 7168, 4096), (8, 4096, 2048, 7168),
-                                                   (32, 256, 7168, 4096), (32, 256, 2048, 7168)):
+    for num_groups, expected_m_per_group, n, k in ((8, 4, 4096, 7168),
+                                                   (8, 4, 7168, 2048),
+                                                   (8, 8, 4096, 7168),
+                                                   (8, 8, 7168, 2048),
+                                                   (8, 16, 4096, 7168),
+                                                   (8, 16, 7168, 2048),
+                                                   (8, 32, 4096, 7168),
+                                                   (8, 32, 7168, 2048),
+                                                   (8, 128, 4096, 7168),
+                                                   (8, 128, 7168, 2048),
+                                                   ):
         # NOTES: we should mask the unfilled part before calculating difference
         m, x_fp8, y_fp8, m_indices, out, ref_out = construct_contiguous_grouped(num_groups, expected_m_per_group, k, n)
         deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(x_fp8, y_fp8, out, m_indices)
@@ -241,18 +249,26 @@ def test_m_grouped_gemm_contiguous() -> None:
 def test_m_grouped_gemm_contiguous_swapAB() -> None:
     print('Testing grouped contiguous GEMM SwapAB:')
 
-    for num_groups, expected_m_per_group, k, n in ((4, 128, 128, 128), 
-                                                   (8, 128, 128, 128),):
+    for num_groups, expected_m_per_group, n, k in ((8, 4, 4096, 7168),
+                                                   (8, 4, 7168, 2048),
+                                                   (8, 8, 4096, 7168),
+                                                   (8, 8, 7168, 2048),
+                                                   (8, 16, 4096, 7168),
+                                                   (8, 16, 7168, 2048),
+                                                   (8, 32, 4096, 7168),
+                                                   (8, 32, 7168, 2048),
+                                                   (8, 128, 4096, 7168),
+                                                   (8, 128, 7168, 2048),
+                                                   ):
         # NOTES: we should mask the unfilled part before calculating difference
-        m, x_fp8, y_fp8, m_indices, out, ref_out = construct_contiguous_grouped(num_groups, expected_m_per_group, k, n)
-        deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(x_fp8, y_fp8, out, m_indices)
+        m, x_fp8, y_fp8, m_indices, out, ref_out = construct_contiguous_grouped(num_groups, expected_m_per_group, k, n, alignment=16)
+        deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(x_fp8, y_fp8, out, m_indices)
         out = torch.where((m_indices == -1).unsqueeze(1), torch.zeros_like(out), out)
         diff = calc_diff(out, ref_out)
         assert diff < 0.001, f'{m=}, {k=}, {n=}, {diff:.5f}'
-        print(f' > {num_groups=}, {expected_m_per_group=}, {k=}, {n=}, {diff:.5f}')
         # noinspection PyShadowingNames
         def test_func():
-            deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(x_fp8, y_fp8, out, m_indices)
+            deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(x_fp8, y_fp8, out, m_indices)
 
         t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
         valid_m = (m_indices != -1).sum().item()

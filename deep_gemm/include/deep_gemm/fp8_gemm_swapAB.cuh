@@ -186,7 +186,12 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
 
                     // Assign TMA multicast number into A and B
                     // NOTES: there may be additional odd rows/columns or cases where multicast is not possible.
-                    const bool is_tma_multicast_valid = scheduler.is_tma_multicast_valid(m_block_idx);
+                    bool is_tma_multicast_valid;
+                    if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
+                        is_tma_multicast_valid = scheduler.is_tma_multicast_valid(n_block_idx);
+                    } else {
+                        is_tma_multicast_valid = scheduler.is_tma_multicast_valid(m_block_idx);
+                    }
                     const uint32_t num_tma_multicast_a = (kIsTMAMulticastOnA and is_tma_multicast_valid) ? kNumTMAMulticast : 1;
                     const uint32_t num_tma_multicast_b = (not kIsTMAMulticastOnA and is_tma_multicast_valid) ? kNumTMAMulticast : 1;
                     DG_STATIC_ASSERT(kNumTMAMulticast <= 2, "Scheduler does not support > 2 TMA multicast");
@@ -202,19 +207,18 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                         auto& full_barrier = *full_barriers[s];
                         uint32_t k_idx = k_iter * kFullKOfAllStages + s * BLOCK_K;
                         tma_copy(&tensor_map_a, reinterpret_cast<uint64_t*>(&full_barrier),
-                                 smem_a[s], k_idx, scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx),
+                                 smem_a[s], k_idx, scheduler.get_global_idx<false>(shape_m, BLOCK_M, m_block_idx, n_block_idx),
                                  num_tma_multicast_a);
 
                         // Issue TMA B
                         tma_copy(&tensor_map_b, reinterpret_cast<uint64_t*>(&full_barrier),
-                                 smem_b[s], k_idx, scheduler.get_global_idx<false>(SHAPE_N, BLOCK_N, n_block_idx, m_block_idx),
+                                 smem_b[s], k_idx, scheduler.get_global_idx(SHAPE_N, BLOCK_N, n_block_idx, m_block_idx),
                                  num_tma_multicast_b);
                         // ! scales_a now applies to tensormap_b
                         tma_copy(&tensor_map_scales_a, reinterpret_cast<uint64_t*>(&full_barrier),
                                  smem_scales_a[s], n_block_idx * BLOCK_N,
                                  scheduler.get_global_idx(SHAPE_K_SCALES, 1, k_idx / BLOCK_K),
                                  num_tma_multicast_b);
-                        // full_barrier.arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + SMEM_SCALES_A_SIZE_PER_STAGE);
                         full_barrier.arrive_and_expect_tx(SMEM_A_SIZE_PER_STAGE + SMEM_B_SIZE_PER_STAGE + BLOCK_N * sizeof(float));
                     }
 
@@ -256,7 +260,7 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
             // Load B scales with math warp-groups
             // NOTES: except the first warp, we want to overlap loading B scales with TMA stores between tasks
             if (threadIdx.x >= 32) {
-                auto num_previous_lines = scheduler.get_global_idx<false>(ceil_div(SHAPE_N, BLOCK_K), 0, 0, m_block_idx);
+                auto num_previous_lines = scheduler.get_global_idx<false>(ceil_div(shape_m, BLOCK_K), 0, 0, n_block_idx);
                 // Load B scales needed for all k iterations of this block into smem
                 auto local_scales_b = scales_b + (num_previous_lines + ((m_block_idx * BLOCK_M) / BLOCK_K)) * SHAPE_K_SCALES;
                 #pragma unroll
@@ -279,7 +283,12 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                     lane_idx < kNumTMAMulticast ? empty_barriers[s]->arrive(target_cta) : void();
                 }
             };
-
+            bool computation_valid;
+            if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
+                computation_valid = scheduler.is_computation_valid(n_block_idx, 0);
+            } else {
+                computation_valid = scheduler.is_computation_valid(m_block_idx, math_wg_idx * WGMMA::M);
+            }
             // Launch MMAs
             launch_k_iterations([&](uint32_t k_iter, auto divisible_type, auto skip_type, auto _) {
                 constexpr bool kSkipComputation = std::is_same_v<decltype(skip_type), SkipComputation>;
@@ -350,7 +359,7 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
                     full_barriers[s]->wait((scheduler.current_iter * kNumIterations + k_iter) & 1);
                     empty_barrier_arrive(s);
                 }
-            }, not scheduler.is_computation_valid(m_block_idx, math_wg_idx * WGMMA::M), num_former_iters);
+            }, not computation_valid, num_former_iters);
 
             // TMA checks
             constexpr uint32_t kNumElemBytes = sizeof(nv_bfloat16);

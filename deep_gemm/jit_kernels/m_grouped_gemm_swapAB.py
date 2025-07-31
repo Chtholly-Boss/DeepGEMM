@@ -2,9 +2,9 @@ import torch
 from typing import Tuple
 
 from ..jit import build
-from .gemm import get_best_configs
+from .gemm_swapAB import get_best_configs
 from .runtime import (
-    FP8GemmRuntime, GemmType,
+    FP8GemmSwapABRuntime, GemmType,
     make_2d_tma_a_desc, make_2d_tma_b_desc,
     make_2d_tma_d_desc, make_2d_tma_scales_desc)
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
@@ -64,29 +64,29 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, to
     # Auto-tuning with compilation
     num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        m, n, k, 1, num_sms, is_grouped_contiguous=True)
+        m, n, k, 1, num_sms)
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    tensor_map_a = make_2d_tma_a_desc(GemmType.GroupedContiguous, lhs, m, k, k, block_m, block_k, num_groups)
-    tensor_map_b = make_2d_tma_b_desc(GemmType.GroupedContiguous, rhs, n, k, k, block_n, block_k, num_groups)
-    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedContiguous, out, m, n, n, block_m, block_n, num_groups, smem_config[1])
-    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedContiguous, lhs_scales, m, k, block_m, block_k, num_groups)
-
+    tensor_map_a = make_2d_tma_b_desc(GemmType.GroupedContiguousSwapAB, rhs, n, k, k, block_m, block_k, num_groups)
+    tensor_map_b = make_2d_tma_a_desc(GemmType.GroupedContiguousSwapAB, lhs, m, k, k, block_n, block_k, num_groups)
+    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedContiguousSwapAB, out, m, n, n, block_n, block_m, num_groups, 0)
+    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedContiguousSwapAB, lhs_scales, m, k, block_n, block_k, num_groups)
+    
     kwargs = {
         # Templated arguments
         'NUM_TMA_THREADS': num_tma_threads,
         'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-        'M': m, 'N': n, 'K': k,
+        'M': n, 'N': m, 'K': k,
         'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
-        'SWIZZLE_D_MODE': smem_config[1],
+        'SWIZZLE_D_MODE': 0,
         'BLOCK_N_PADDING': smem_config[2],
         'NUM_GROUPS': num_groups,
         'NUM_STAGES': num_stages,
         'NUM_TMA_MULTICAST': tma_multicast_config[0],
         'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
-        'GEMM_TYPE': GemmType.GroupedContiguous,
+        'GEMM_TYPE': GemmType.GroupedContiguousSwapAB,
         # Runtime arguments
         'SCALES_B': rhs_scales,
         'GROUPED_LAYOUT': m_indices,
@@ -101,6 +101,6 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, to
     }
 
     # Generate, build and run the kernel
-    code = FP8GemmRuntime.generate(kwargs)
-    runtime = build('m_grouped_gemm_fp8_fp8_bf16_nt', code, FP8GemmRuntime, kwargs)
+    code = FP8GemmSwapABRuntime.generate(kwargs)
+    runtime = build('m_grouped_gemm_fp8_fp8_bf16_nt_swapAB', code, FP8GemmSwapABRuntime, kwargs)
     runtime(**kwargs)
