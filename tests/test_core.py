@@ -47,9 +47,17 @@ def construct(m: int, k: int, n: int) -> \
     return x_fp8, y_fp8, out, ref_out
 
 
-def construct_contiguous_grouped(num_groups: int, expected_m_per_group: int, k: int, n: int) -> \
+def construct_contiguous_grouped(num_groups: int, expected_m_per_group: int, k: int, n: int, alignment: int = 128) -> \
         Tuple[int, Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
-    alignment = get_m_alignment_for_contiguous_layout()
+    """
+    Constructs tensors for grouped GEMM with contiguous layout.
+    Arguments:
+        num_groups: number of groups.
+        expected_m_per_group: expected M-axis size per group.
+        k: K-axis size.
+        n: N-axis size.
+        alignment: alignment for M-axis. Default is 128 due to GEMM block shape. When using SwapAB, this can range from (16, 128, 8)
+    """
     group_ms = [int(expected_m_per_group * random.uniform(0.7, 1.3)) for _ in range(num_groups)]
     m = sum([ceil_div(x, alignment) * alignment for x in group_ms])
 
@@ -230,6 +238,28 @@ def test_m_grouped_gemm_contiguous() -> None:
               f'{(valid_m * k + num_groups * k * n + valid_m * n * 2) / 1e9 / t:4.0f} GB/s')
     print()
 
+def test_m_grouped_gemm_contiguous_swapAB() -> None:
+    print('Testing grouped contiguous GEMM SwapAB:')
+
+    for num_groups, expected_m_per_group, k, n in ((4, 128, 128, 128), 
+                                                   (8, 128, 128, 128),):
+        # NOTES: we should mask the unfilled part before calculating difference
+        m, x_fp8, y_fp8, m_indices, out, ref_out = construct_contiguous_grouped(num_groups, expected_m_per_group, k, n)
+        deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(x_fp8, y_fp8, out, m_indices)
+        out = torch.where((m_indices == -1).unsqueeze(1), torch.zeros_like(out), out)
+        diff = calc_diff(out, ref_out)
+        assert diff < 0.001, f'{m=}, {k=}, {n=}, {diff:.5f}'
+        print(f' > {num_groups=}, {expected_m_per_group=}, {k=}, {n=}, {diff:.5f}')
+        # noinspection PyShadowingNames
+        def test_func():
+            deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(x_fp8, y_fp8, out, m_indices)
+
+        t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
+        valid_m = (m_indices != -1).sum().item()
+        print(f' > Perf ({num_groups=:2}, {expected_m_per_group=:4}, n={n:4}, k={k:4}): {t * 1e6:4.0f} us | '
+              f'throughput: {2 * valid_m * n * k / t / 1e12:4.0f} TFLOPS, '
+              f'{(valid_m * k + num_groups * k * n + valid_m * n * 2) / 1e9 / t:4.0f} GB/s')
+    print()
 
 def test_m_grouped_gemm_masked() -> None:
     print('Testing grouped masked GEMM:')

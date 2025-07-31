@@ -5,6 +5,7 @@ from .jit_kernels import (
     gemm_fp8_fp8_bf16_nt,
     gemm_fp8_fp8_bf16_nt_swapAB,
     m_grouped_gemm_fp8_fp8_bf16_nt_contiguous,
+    m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB,
     m_grouped_gemm_fp8_fp8_bf16_nt_masked,
     wgrad_gemm_fp8_fp8_fp32_nt,
     k_grouped_wgrad_gemm_fp8_fp8_fp32_nt,
