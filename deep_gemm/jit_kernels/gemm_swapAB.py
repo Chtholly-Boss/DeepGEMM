@@ -69,14 +69,13 @@ def get_smem_config(num_stages: int, k: int, block_m: int, block_n: int, block_k
 @lru_cache(maxsize=None)
 def get_best_configs(m: int, n: int, k: int, num_groups: int, num_sms: int,
                      is_grouped_contiguous: bool = False, is_grouped_masked: bool = False,
-                     is_fp32_out: bool = False, is_wgrad: bool = False) -> \
+                     is_fp32_out: bool = False, is_wgrad: bool = False, alignment: int = 16) -> \
         Tuple[int, int, int, int, Tuple[int, bool], Tuple[int, int, int]]:
+    block_ms = (64, 128)
     if not is_grouped_contiguous:
-        block_ms = (64, 128, )
+        block_ns = tuple(range(16, 129, 8)) + ((136, 152, ) if is_wgrad else (144, 160, ))
     else:
-        block_ms = (get_m_alignment_for_contiguous_layout(), )
-    # block_ns = tuple(range(16, 129, 8)) + ((136, 152, ) if is_wgrad else (144, 160, ))
-    block_ns = (16, )
+        block_ns = tuple(range(16, alignment + 1, 16))
     
     # Avoid bank conflicts for FP32 output
     if is_fp32_out:

@@ -12,17 +12,17 @@ from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, torch.Tensor],
                                                      rhs: Tuple[torch.Tensor, torch.Tensor],
-                                                     out: torch.Tensor, m_indices: torch.Tensor) -> None:
+                                                     out: torch.Tensor, m_indices: torch.Tensor,
+                                                     alignment = 16) -> None:
     """
-    Perform a grouped GEMM (contiguous format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
+    Perform a A/B swaped grouped GEMM (contiguous format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
 
     Requirements:
         LHS, RHS, RHS scaling factors, and output tensors must be in contiguous format.
         RHS and RHS scaling factors are required to be transposed.
         The LHS scaling tensor requires a TMA-aligned transposed format, if your input does not match the requirement,
             this function will do a transposing with a set of slow PyTorch operations.
-        On the M axis, inputs are grouped into several batches, of which batch sizes aligned to
-            `get_m_alignment_for_contiguous_layout()` (128).
+        LHS are grouped into several batches, of which batch sizes aligned to `alignment`.
 
     Arguments:
         lhs: the first element is an FP8 tensor (typed `torch.float8_e4m3fn`) of shape `[m_sum, k]`,
@@ -34,6 +34,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, to
             `m_indices[i]` records the group which the i-th row of the LHS belongs to,
             which means that the i-th row of the LHS matrix will be multiplied with `rhs[m_indices[i]]`.
             Values of `m_indices` in every-m-alignment-block must also be the same.
+        alignment: the alignment of the m-dimension of the LHS matrix, default is 16.
     """
     lhs, lhs_scales = lhs
     rhs, rhs_scales = rhs
@@ -64,7 +65,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, to
     # Auto-tuning with compilation
     num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        m, n, k, 1, num_sms)
+        m, n, k, 1, num_sms, alignment)
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
