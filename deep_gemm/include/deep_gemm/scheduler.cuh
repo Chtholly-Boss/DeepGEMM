@@ -74,8 +74,8 @@ struct Scheduler {
                 return true;
             } else {
                 // n_block_idx indeed
-                auto group_idx = __ldg(grouped_layout + m_block_idx * BLOCK_M);
-                auto peer_group_idx = __ldg(grouped_layout + (m_block_idx ^ 1) * BLOCK_M);
+                auto group_idx = __ldg(grouped_layout + m_block_idx * BLOCK_N);
+                auto peer_group_idx = __ldg(grouped_layout + (m_block_idx ^ 1) * BLOCK_N);
                 return group_idx == peer_group_idx;
             }
         } else {
