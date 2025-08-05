@@ -418,8 +418,8 @@ if __name__ == '__main__':
     test_gemm()
     test_gemm_swapAB()
     test_m_grouped_gemm_contiguous()
-    test_m_grouped_gemm_masked()
     test_m_grouped_gemm_contiguous_swapAB()
+    test_m_grouped_gemm_masked()
     test_m_grouped_gemm_masked_swapAB()
     
     test_wgrad_gemm()
