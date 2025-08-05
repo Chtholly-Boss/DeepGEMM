@@ -101,7 +101,7 @@ def make_2d_tma_a_desc(gemm_type: GemmType, t: torch.Tensor,
                        block_m: int, block_k: int,
                        num_groups: int) -> cbd.CUtensorMap:
     return make_2d_tma_desc(t,
-                            shape_k, shape_m * (num_groups if gemm_type == GemmType.GroupedMasked else 1), m_stride,
+                            shape_k, shape_m * (num_groups if gemm_type in (GemmType.GroupedMasked, GemmType.GroupedMaskedSwapAB) else 1), m_stride,
                             block_k, block_m)
 
 
@@ -122,7 +122,7 @@ def make_2d_tma_d_desc(gemm_type: GemmType, t: torch.Tensor,
     # Swizzling requires the inner box dim to be less or equal than `kSwizzleDMode`
     # bytes, so `BLOCK_N * sizeof(T) / kSwizzleDMode` TMA stores are required
     return make_2d_tma_desc(t,
-                            shape_n, shape_m * (num_groups if gemm_type == GemmType.GroupedMasked else 1), m_stride,
+                            shape_n, shape_m * (num_groups if gemm_type in (GemmType.GroupedMasked, GemmType.GroupedMaskedSwapAB) else 1), m_stride,
                             block_n if swizzle_mode == 0 else swizzle_mode // t.element_size(), block_m,
                             swizzle_type_map[swizzle_mode])
 
@@ -134,7 +134,7 @@ def make_2d_tma_scales_desc(gemm_type: GemmType, t: torch.Tensor,
     # Make TMA aligned to 16 bytes
     shape_mn = get_tma_aligned_size(shape_mn, t.element_size())
     return make_2d_tma_desc(t,
-                            shape_mn, (shape_k + block_k - 1) // block_k * (num_groups if gemm_type == GemmType.GroupedMasked else 1), shape_mn,
+                            shape_mn, (shape_k + block_k - 1) // block_k * (num_groups if gemm_type in (GemmType.GroupedMasked, GemmType.GroupedMaskedSwapAB) else 1), shape_mn,
                             block_mn, 1,
                             cbd.CUtensorMapSwizzle.CU_TENSOR_MAP_SWIZZLE_NONE)
 

@@ -45,7 +45,7 @@ struct Scheduler {
         } else if (kGemmType == GemmType::GroupedContiguous or kGemmType == GemmType::GroupedContiguousSwapAB) {
             num_blocks = num_aligned_m_blocks * kNumNBlocks;
             this->grouped_layout = grouped_layout;
-        } else if (kGemmType == GemmType::GroupedMasked) {
+        } else if (kGemmType == GemmType::GroupedMasked or kGemmType == GemmType::GroupedMaskedSwapAB) {
             curr_group_idx = curr_cumsum = 0;
             this->grouped_layout = grouped_layout;
         }
@@ -68,7 +68,8 @@ struct Scheduler {
     __device__ __forceinline__ bool is_tma_multicast_valid(const uint32_t& m_block_idx) const {
         if (num_blocks_in_group == 1)
             return false;
-        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB or kGemmType == GemmType::GroupedMasked) {
+        if constexpr (kGemmType == GemmType::Normal or kGemmType == GemmType::NormalSwapAB 
+                        or kGemmType == GemmType::GroupedMasked or kGemmType == GemmType::GroupedMaskedSwapAB) {
             return true;
         } else if constexpr (kGemmType == GemmType::GroupedContiguousSwapAB) {
             if constexpr (not kIsTMAMulticastOnA) {
@@ -98,6 +99,10 @@ struct Scheduler {
         // Swizzle for better L2 usages
         auto primary_num_blocks = kIsTMAMulticastOnA ? kNumNBlocks : num_m_blocks;
         auto secondary_num_blocks = kIsTMAMulticastOnA ? num_m_blocks : kNumNBlocks;
+        if constexpr (kGemmType == GemmType::GroupedMaskedSwapAB) {
+            primary_num_blocks = kIsTMAMulticastOnA ? num_m_blocks : num_aligned_m_blocks;
+            secondary_num_blocks = kIsTMAMulticastOnA ? num_aligned_m_blocks : num_m_blocks;
+        }
         auto num_blocks_per_group = secondary_num_blocks * kNum1DBlocksPerGroup;
         auto group_idx = block_idx / num_blocks_per_group;
         auto first_block_idx = group_idx * kNum1DBlocksPerGroup;
@@ -137,7 +142,7 @@ struct Scheduler {
             // n_block_idx indeed
             auto offset = kIgnoreGroupedForGroupedContiguous ? 0 : max(0, __ldg(grouped_layout + m_block_idx * BLOCK_N));
             return offset * shape_dim + block_idx * block_size;
-        } else if constexpr (kGemmType == GemmType::GroupedMasked) {
+        } else if constexpr (kGemmType == GemmType::GroupedMasked or kGemmType == GemmType::GroupedMaskedSwapAB) {
             return curr_group_idx * shape_dim + block_idx * block_size;
         }
     }
@@ -163,6 +168,24 @@ struct Scheduler {
             }
 
             get_swizzled_block_idx(num_m_blocks, next_block_idx - curr_cumsum * kNumNBlocks, m_block_idx, n_block_idx);
+        } else if constexpr (kGemmType == GemmType::GroupedMaskedSwapAB) {
+            uint32_t num_m_blocks;
+            while (true) {
+                // End of the task
+                if (curr_group_idx == kNumGroups)
+                    return false;
+
+                // Within the current group
+                num_m_blocks = ceil_div(static_cast<uint32_t>(__ldg(grouped_layout + curr_group_idx)), BLOCK_N);
+                auto current_m_block_cumsum = curr_cumsum + num_m_blocks;
+                if (next_block_idx < current_m_block_cumsum * num_aligned_m_blocks)
+                    break;
+
+                // Move to check the next group
+                curr_group_idx ++, curr_cumsum = current_m_block_cumsum;
+            }
+
+            get_swizzled_block_idx(num_m_blocks, next_block_idx - curr_cumsum * num_aligned_m_blocks, m_block_idx, n_block_idx);
         } else {
             if (next_block_idx >= num_blocks)
                 return false;

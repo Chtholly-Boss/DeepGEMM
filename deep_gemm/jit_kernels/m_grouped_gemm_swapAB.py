@@ -65,7 +65,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB(lhs: Tuple[torch.Tensor, to
     # Auto-tuning with compilation
     num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        n, m, k, 1, num_sms, alignment)
+        n, m, k, 1, num_sms, is_grouped_contiguous=True,alignment=alignment)
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
@@ -157,7 +157,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked_swapAB(lhs: Tuple[torch.Tensor, torch.
     # Auto-tuning with compilation
     num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        expected_m, n, k, num_groups, num_sms, is_grouped_masked=True)
+        n, expected_m, k, num_groups, num_sms, is_grouped_masked=True)
 
     # Extra checks for TMA store
     if num_groups > 1 and m > block_m:
@@ -167,24 +167,24 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked_swapAB(lhs: Tuple[torch.Tensor, torch.
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    tensor_map_a = make_2d_tma_a_desc(GemmType.GroupedMasked, lhs, m, k, k, block_m, block_k, num_groups)
-    tensor_map_b = make_2d_tma_b_desc(GemmType.GroupedMasked, rhs, n, k, k, block_n, block_k, num_groups)
-    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedMasked, out, m, n, n, block_m, block_n, num_groups, smem_config[1])
-    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedMasked, lhs_scales, m, k, block_m, block_k, num_groups)
+    tensor_map_a = make_2d_tma_b_desc(GemmType.GroupedMaskedSwapAB, rhs, n, k, k, block_m, block_k, num_groups)
+    tensor_map_b = make_2d_tma_a_desc(GemmType.GroupedMaskedSwapAB, lhs, m, k, k, block_n, block_k, num_groups)
+    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedMaskedSwapAB, out, m, n, n, block_n, block_m, num_groups, 0)
+    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedMaskedSwapAB, lhs_scales, m, k, block_n, block_k, num_groups)
 
     kwargs = {
         # Templated arguments
         'NUM_TMA_THREADS': num_tma_threads,
         'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-        'M': m, 'N': n, 'K': k,
+        'M': n, 'N': m, 'K': k,
         'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
-        'SWIZZLE_D_MODE': smem_config[1],
+        'SWIZZLE_D_MODE': 0,
         'BLOCK_N_PADDING': smem_config[2],
         'NUM_GROUPS': num_groups,
         'NUM_STAGES': num_stages,
         'NUM_TMA_MULTICAST': tma_multicast_config[0],
         'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
-        'GEMM_TYPE': GemmType.GroupedMasked,
+        'GEMM_TYPE': GemmType.GroupedMaskedSwapAB,
         # Runtime arguments
         'SCALES_B': rhs_scales,
         'GROUPED_LAYOUT': masked_m,

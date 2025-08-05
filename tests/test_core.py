@@ -281,8 +281,18 @@ def test_m_grouped_gemm_contiguous_swapAB() -> None:
 def test_m_grouped_gemm_masked() -> None:
     print('Testing grouped masked GEMM:')
 
-    for num_groups, expected_m_per_group in ((1, 1024), (2, 512), (4, 256)):
-        for k, n in ((7168, 4096), (2048, 7168), ):
+    for num_groups, expected_m_per_group, n, k in (
+                                                    (32, 4, 4096, 7168),
+                                                    (32, 4, 7168, 2048),
+                                                    (32, 8, 4096, 7168),
+                                                    (32, 8, 7168, 2048),
+                                                    (32, 16, 4096, 7168),
+                                                    (32, 16, 7168, 2048),
+                                                    (32, 32, 4096, 7168),
+                                                    (32, 32, 7168, 2048),
+                                                    (32, 128, 4096, 7168),
+                                                    (32, 128, 7168, 2048),
+                                                   ):
             # Test correctness
             for i in range(10):
                 x_fp8, y_fp8, masked_m, out, ref_out = construct_masked_grouped(num_groups, 4096, expected_m_per_group, k, n)
@@ -305,7 +315,7 @@ def test_m_grouped_gemm_masked() -> None:
     print()
 
 def test_m_grouped_gemm_masked_swapAB() -> None:
-    print('Testing grouped masked GEMM:')
+    print('Testing grouped masked GEMM SwapAB:')
 
     for num_groups, expected_m_per_group, n, k in (
                                                     (32, 4, 4096, 7168),

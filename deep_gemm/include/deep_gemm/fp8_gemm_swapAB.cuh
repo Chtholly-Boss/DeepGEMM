@@ -431,12 +431,13 @@ fp8_gemm_swapAB_kernel(float* scales_b, int* grouped_layout,
             // Use TMA store to write back to global memory
             // TODO: compatible with FP32 output
             DG_STATIC_ASSERT(kNumMathThreads >= BLOCK_N / TMA_D_BLOCK_N, "Too many TMA blocks");
-            if (threadIdx.x < BLOCK_N / TMA_D_BLOCK_N) {
+            if (threadIdx.x < BLOCK_N / TMA_D_BLOCK_N) { // swapAB doesn't use swizzle, only 1 thread will do TMA store
                 auto in_block_n_offset = threadIdx.x * TMA_D_BLOCK_N;
                 auto smem_ptr = smem_d + in_block_n_offset * BLOCK_M;
                 cute::SM90_TMA_STORE_2D::copy(&tensor_map_d, smem_ptr,
-                                            scheduler.get_global_idx(shape_m, BLOCK_M, m_block_idx),
-                                              n_block_idx * BLOCK_N + in_block_n_offset);                
+                            m_block_idx * BLOCK_M, // n-dimension not group merged, just use block idx
+                            scheduler.get_global_idx(SHAPE_N, BLOCK_N, n_block_idx) // m-dimension is group merged, use global idx
+                            );      
                 cute::tma_store_arrive();
             }
             __syncwarp();
