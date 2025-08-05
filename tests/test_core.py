@@ -304,6 +304,41 @@ def test_m_grouped_gemm_masked() -> None:
                   f'{(valid_m * k + num_groups * k * n + valid_m * n * 2) / 1e9 / t:4.0f} GB/s')
     print()
 
+def test_m_grouped_gemm_masked_swapAB() -> None:
+    print('Testing grouped masked GEMM:')
+
+    for num_groups, expected_m_per_group, n, k in (
+                                                    (32, 4, 4096, 7168),
+                                                    (32, 4, 7168, 2048),
+                                                    (32, 8, 4096, 7168),
+                                                    (32, 8, 7168, 2048),
+                                                    (32, 16, 4096, 7168),
+                                                    (32, 16, 7168, 2048),
+                                                    (32, 32, 4096, 7168),
+                                                    (32, 32, 7168, 2048),
+                                                    (32, 128, 4096, 7168),
+                                                    (32, 128, 7168, 2048),
+                                                   ):
+            # Test correctness
+            for i in range(10):
+                x_fp8, y_fp8, masked_m, out, ref_out = construct_masked_grouped(num_groups, 4096, expected_m_per_group, k, n)
+                deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_masked_swapAB(x_fp8, y_fp8, out, masked_m, expected_m_per_group)
+                for j in range(num_groups):
+                    diff = calc_diff(out[j, :masked_m[j].item()], ref_out[j, :masked_m[j].item()])
+                    assert diff < 0.001, f'{expected_m_per_group=}, {k=}, {n=}, {j=}, masked_m={masked_m[j]}, {num_groups=}, {diff:.5f}'
+
+            # noinspection PyShadowingNames
+            def test_func():
+                deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_masked_swapAB(x_fp8, y_fp8, out, masked_m, expected_m_per_group)
+
+            # Test performance with fixed shapes
+            # noinspection PyUnboundLocalVariable
+            valid_m = masked_m.sum().item()
+            t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
+            print(f' > Perf ({num_groups=}, expected_m_per_group={expected_m_per_group:4}, n={n:4}, k={k:4}): {t * 1e6:4.0f} us | '
+                  f'throughput: {2 * valid_m * n * k / t / 1e12:4.0f} TFLOPS, '
+                  f'{(valid_m * k + num_groups * k * n + valid_m * n * 2) / 1e9 / t:4.0f} GB/s')
+    print()
 
 def test_wgrad_gemm():
     print('Testing weight gradient GEMM:')
@@ -374,6 +409,8 @@ if __name__ == '__main__':
     test_gemm_swapAB()
     test_m_grouped_gemm_contiguous()
     test_m_grouped_gemm_masked()
-
+    test_m_grouped_gemm_contiguous_swapAB()
+    test_m_grouped_gemm_masked_swapAB()
+    
     test_wgrad_gemm()
     test_k_grouped_wgrad_gemm()

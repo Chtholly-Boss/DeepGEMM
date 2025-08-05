@@ -7,6 +7,7 @@ from .jit_kernels import (
     m_grouped_gemm_fp8_fp8_bf16_nt_contiguous,
     m_grouped_gemm_fp8_fp8_bf16_nt_contiguous_swapAB,
     m_grouped_gemm_fp8_fp8_bf16_nt_masked,
+    m_grouped_gemm_fp8_fp8_bf16_nt_masked_swapAB,
     wgrad_gemm_fp8_fp8_fp32_nt,
     k_grouped_wgrad_gemm_fp8_fp8_fp32_nt,
     ceil_div,

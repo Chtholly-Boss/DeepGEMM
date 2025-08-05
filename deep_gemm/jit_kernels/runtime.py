@@ -15,6 +15,7 @@ class GemmType(enum.Enum):
     GroupedMasked = 2
     NormalSwapAB = 3
     GroupedContiguousSwapAB = 4
+    GroupedMaskedSwapAB = 5
 
     def __str__(self) -> str:
         return {
@@ -23,6 +24,7 @@ class GemmType(enum.Enum):
             2: 'GroupedMasked',
             3: 'NormalSwapAB',
             4: 'GroupedContiguousSwapAB',
+            5: 'GroupedMaskedSwapAB',
         }[self.value]
 
 

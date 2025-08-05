@@ -10,6 +10,7 @@ enum class GemmType {
     GroupedMasked = 2,
     NormalSwapAB = 3,
     GroupedContiguousSwapAB = 4,
+    GroupedMaskedSwapAB = 5
 };
 
 #pragma clang diagnostic push
